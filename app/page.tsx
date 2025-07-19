@@ -1,101 +1,176 @@
-import Image from "next/image";
+"use client";
+import React, { useState, useRef, useEffect } from "react";
+import Webcam from "react-webcam";
+import * as faceapi from "face-api.js";
 
-export default function Home() {
+const LivenessCheck = () => {
+  const webcamRef = useRef<Webcam>(null);
+  const [status, setStatus] = useState("Initializing...");
+  const [webcamActive, setWebcamActive] = useState(true);
+  const prevNosePosition = useRef<{ x: number; y: number } | null>(null);
+  const prevEyeHeight = useRef<number | null>(null);
+  const prevFaceSize = useRef<number | null>(null);
+
+  // Load Face API models
+  useEffect(() => {
+    const loadModels = async () => {
+      await faceapi.nets.tinyFaceDetector.loadFromUri("/models");
+      await faceapi.nets.faceLandmark68Net.loadFromUri("/models");
+      await faceapi.nets.faceExpressionNet.loadFromUri("/models");
+      await faceapi.nets.ssdMobilenetv1.loadFromUri("/models");
+      setStatus("Models Loaded. Ready to start.");
+    };
+
+    loadModels();
+  }, []);
+
+  // Function to stop webcam
+  const stopWebcam = () => {
+    if (webcamRef.current && webcamRef.current.video) {
+      const stream = webcamRef.current.video.srcObject as MediaStream;
+      stream.getTracks().forEach(track => track.stop()); // Stop all video tracks
+      setWebcamActive(false);
+    }
+  };
+
+  // Run Liveness Check
+  const checkLiveness = async () => {
+    if (!webcamRef.current?.video) return;
+
+    setStatus("Detecting face...");
+    const detection = await faceapi.detectSingleFace(webcamRef.current.video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+    if (!detection) {
+      setStatus("No face detected ❌");
+      return;
+    }
+
+    const landmarks = detection.landmarks;
+    const nose = landmarks.getNose();
+    const leftEye = landmarks.getLeftEye();
+    const rightEye = landmarks.getRightEye();
+
+    if (!nose || !leftEye || !rightEye) {
+      setStatus("Error detecting facial features ❌. Please retry.");
+      return;
+    }
+
+    prevEyeHeight.current = (getEyeHeight(leftEye) + getEyeHeight(rightEye)) / 2;
+    prevNosePosition.current = { x: nose[0].x, y: nose[0].y };
+
+    const detection2 = await faceapi.detectSingleFace(webcamRef.current.video, new faceapi.SsdMobilenetv1Options());
+    if (!detection2) {
+      setStatus("No face detected ❌");
+      return;
+    }
+
+    prevFaceSize.current = detection2.box.width * detection2.box.height;
+    setStatus("Face detected ✅. Blink your eyes...");
+
+    setTimeout(() => {
+      checkBlink();
+    }, 3000);
+  };
+
+  // Function to check for blink
+  const checkBlink = async () => {
+    if (!webcamRef.current?.video) return;
+
+    const detection = await faceapi.detectSingleFace(webcamRef.current.video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+    if (!detection) {
+      setStatus("No face detected ❌");
+      return;
+    }
+
+    const landmarks = detection.landmarks;
+    const leftEye = landmarks.getLeftEye();
+    const rightEye = landmarks.getRightEye();
+
+    if (!leftEye || !rightEye) {
+      setStatus("Error detecting eyes ❌. Please retry.");
+      return;
+    }
+
+    const newEyeHeight = (getEyeHeight(leftEye) + getEyeHeight(rightEye)) / 2;
+
+    if (prevEyeHeight.current !== null && Math.abs(prevEyeHeight.current - newEyeHeight) > 0.5) {
+      setStatus("Blink detected ✅. Move your head slightly...");
+      setTimeout(() => {
+        checkHeadMovement();
+      }, 3000);
+    } else {
+      setStatus("No blink detected ❌. Please retry.");
+    }
+  };
+
+  // Function to check head movement
+  const checkHeadMovement = async () => {
+    if (!webcamRef.current?.video) return;
+
+    const detection = await faceapi.detectSingleFace(webcamRef.current.video, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks();
+    if (!detection) {
+      setStatus("No face detected ❌");
+      return;
+    }
+
+    const nose = detection.landmarks.getNose();
+    if (!nose || nose.length < 1) {
+      setStatus("Error detecting nose ❌. Please retry.");
+      return;
+    }
+
+    const newNosePosition = { x: nose[0].x, y: nose[0].y };
+
+    if (
+      prevNosePosition.current &&
+      (Math.abs(prevNosePosition.current.x - newNosePosition.x) > 50 ||
+        Math.abs(prevNosePosition.current.y - newNosePosition.y) > 10)
+    ) {
+      setStatus("Head movement detected ✅. Move your face closer or farther...");
+      setTimeout(() => {
+        checkDepth();
+      }, 3000);
+    } else {
+      setStatus("No head movement detected ❌. Please retry.");
+    }
+  };
+
+  // Function to check depth (face moving closer/farther)
+  const checkDepth = async () => {
+    if (!webcamRef.current?.video) return;
+
+    const detection = await faceapi.detectSingleFace(webcamRef.current.video, new faceapi.SsdMobilenetv1Options());
+    if (!detection) {
+      setStatus("No face detected ❌. Please retry.");
+      return;
+    }
+
+    const faceBox = detection.box;
+    const newFaceSize = faceBox.width * faceBox.height;
+
+    if (prevFaceSize.current !== null && Math.abs(prevFaceSize.current - newFaceSize) > prevFaceSize.current * 0.2) {
+      setStatus("Depth confirmed ✅. Liveness successful!");
+      stopWebcam(); // Stop webcam after success
+    } else {
+      setStatus("Depth check failed ❌. Please retry.");
+    }
+  };
+
+  // Helper function to calculate eye height
+  const getEyeHeight = (eye: { x: number; y: number }[]) => {
+    if (!eye || eye.length < 6) return 0;
+    return Math.abs(eye[1].y - eye[5].y);
+  };
+
   return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-8 row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li>Save and see your changes instantly.</li>
-        </ol>
-
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:min-w-44"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-6 flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+    <div>
+      <h2>Liveness Check</h2>
+      {webcamActive && <Webcam ref={webcamRef} />}
+      <button onClick={checkLiveness} disabled={!webcamActive}>
+        Start Liveness Check
+      </button>
+      <p>{status}</p>
     </div>
   );
-}
+};
+
+export default LivenessCheck;
